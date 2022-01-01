@@ -1,8 +1,9 @@
-//! Derive a constant value holding the struct's name as [`&str`].
+//! This crate is the `proc_macro` library associated with the `mongodb_ext` crate.
 //!
-//! All case modifications from the [`Case`] enum can be used to modify the value of the constant.
+//! Since recent changes, this crate has an unfortunate name.
+//! "derive" is not quite correct, because this crate's purpose is to provide macros, not **derive** macros explicitly.
 //!
-//! The constant's key can be renamed.
+//! This crate currently provides one macro: [`case!`].
 
 extern crate convert_case;
 extern crate proc_macro;
@@ -15,169 +16,129 @@ use {
     crate::{
         convert_case::{Case, Casing},
         proc_macro::TokenStream,
-        proc_macro2::{Literal, TokenStream as TokenStream2},
-        quote::{quote, ToTokens},
-        syn::{DeriveInput, Ident, LitStr, TypePath},
+        proc_macro2::Span,
+        quote::ToTokens,
+        syn::{
+            parse::{Error as SynError, Parse, ParseStream, Result as SynResult},
+            spanned::Spanned,
+            token::FatArrow,
+            LitStr, Path,
+        },
     },
     std::convert::From,
 };
 
-/// Derivable macro that provides you with a constant variable that holds the name of the item derived on.
+struct CaseInput(LitStr);
+impl Parse for CaseInput {
+    fn parse(input: ParseStream) -> SynResult<Self> {
+        // parse first path
+        let first_path: Path = input.parse::<Path>()?;
+        // get first path's span
+        let first_span: Span = first_path.span();
+        // convert first path to String
+        let first_string: String = if let Some(last_of_first) = first_path.segments.last() {
+            last_of_first.ident.to_string()
+        } else {
+            // throw error if there is no last element
+            return Err(SynError::new(first_span, "Cannot get last element of path"));
+        };
+
+        // parse `=>`
+        let _: FatArrow = input.parse::<FatArrow>()?;
+
+        // parse last (second) case
+        let last_path: Path = input.parse::<Path>()?;
+        // get last path's span
+        let last_span: Span = last_path.span();
+        // convert last path to String
+        let last_string: String = if let Some(last_of_last) = last_path.segments.last() {
+            last_of_last.ident.to_string()
+        } else {
+            // throw error if there is no last element
+            return Err(SynError::new(last_span, "Cannot get last element of path"));
+        };
+
+        // parse case as instance of `convert_case::Case`
+        let mut case: Option<Case> = None;
+        for c in Case::all_cases() {
+            if format!("{:?}", c).eq(&last_string) {
+                case = Some(c);
+                break;
+            }
+        }
+        if case.is_none() {
+            return Err(SynError::new(
+                last_span,
+                "Cannot parse case parameter as `Case`",
+            ));
+        }
+        let case = case.unwrap();
+
+        // change first path's case and return
+        let parsed_path: String = first_string.to_case(case);
+        Ok(Self(LitStr::new(&parsed_path, first_span)))
+    }
+}
+
+/// Small macro that converts the input path to a given case.
 ///
-/// Key and value of the constant can be manipulated to some degree.
+/// The general accepted format is: `case!(path::to::Type => Case)`
 ///
-/// This macro uses the [`convert_case`] crate internally.
-/// Its [`Case`] enum does not implement much conversion, so this macro relies on its [`Debug`] implementation.
+/// Hereby
+/// - `path::to::Type` can be any path. It does not need to exist.
+/// - `=>` is just a fat arrow that separates the two parameters.
+/// - `Case` is any path that points to any value of the [`convert_case`] crate's [`Case`] enum.
+///
+/// This macro always expands to a [`&str`] literal ([`LitStr`](struct@syn::LitStr)).
 ///
 /// # Examples
 ///
-/// The default implementation names the key after the struct in SCREAMING_SNAKE_CASE and the value after the struct's name as-is.
+/// The identifier given does not need to be an existing type:
 ///
 /// ```rust
-/// use mongodb_ext_derive::ConstName;
+/// use mongodb_ext_derive::case;
 ///
-/// #[derive(ConstName)]
-/// struct MyStruct {
-///     some_field: u16,
-/// }
-///
-/// assert_eq!("MyStruct", MY_STRUCT);
+/// // `MyImaginaryType` is not imported, but works anyways
+/// // `Case` is not imported, but works anyways
+/// assert_eq!(
+///     case!(MyImaginaryType => Case::Camel),
+///     "myImaginaryType"
+/// );
 /// ```
 ///
-/// ## Customizing the [`ConstName`] derive
-///
-/// Change the constant's value's case by using any type from [`Case`] inside of `#[const_name_value()]`.
+/// If a path is given, only the last element will be parsed:
 ///
 /// ```rust
-/// use mongodb_ext_derive::ConstName;
-/// use convert_case::Case;
+/// use mongodb_ext_derive::case;
 ///
-/// #[derive(ConstName)]
-/// #[const_name_value(Case::Snake)]
-/// struct MyStruct {
-///     some_field: u16,
-/// }
-///
-/// assert_eq!("my_struct", MY_STRUCT);
+/// assert_eq!(
+///     case!(std::collection::HashMap => Snake),
+///     "hash_map"
+/// );
 /// ```
 ///
 /// ```rust
-/// use mongodb_ext_derive::ConstName;
+/// use mongodb_ext_derive::case;
 ///
-/// #[derive(ConstName)]
-/// #[const_name_value(convert_case::Case::Camel)]
-/// struct MyStruct {
-///     some_field: u16,
-/// }
+/// assert_eq!(
+///     case!(std::this::r#type::does::not::exist::THIS_CONSTANT_DOES_NOT_EXIST => Pascal),
+///     "ThisConstantDoesNotExist"
+/// );
 ///
-/// assert_eq!("myStruct", MY_STRUCT);
+/// assert_eq!(
+///     case!(std::this::r#type::does::not::exist::this_function_does_not_exist => Title),
+///     "This Function Does Not Exist"
+/// );
+///
+/// assert_eq!(
+///     case!(std::this::r#type::does::not::exist::ThisTypeDoesNotExist => Camel),
+///     "thisTypeDoesNotExist"
+/// );
 /// ```
-///
-/// You do not actually need to specify a valid path to [`Case`], but all [`Case`]'s types are dynamically supported:
-///
-/// ```rust
-/// use mongodb_ext_derive::ConstName;
-///
-/// #[derive(ConstName)]
-/// // Specifying "Camel" without having Case in scope, still works.
-/// #[const_name_value(Camel)]
-/// struct MyStruct {
-///     some_field: u16,
-/// }
-///
-/// assert_eq!("myStruct", MY_STRUCT);
-/// ```
-///
-/// Change the constant's key by specifying a new key with `#[const_name_key()]`.
-///
-/// ```rust
-/// use mongodb_ext_derive::ConstName;
-///
-/// #[derive(ConstName)]
-/// #[const_name_key("STRUCT_NAME")]
-/// struct MyStruct {
-///     some_field: u16,
-/// }
-///
-/// assert_eq!("MyStruct", STRUCT_NAME);
-/// ```
-///
-/// Invalid attributes end up in a panic whilst compiling.
-///
-/// ```compile_fail
-/// use mongodb_ext_derive::ConstName;
-///
-/// #[derive(ConstName)]
-/// #[const_name_value(NotACaseValue)]
-/// struct MyStruct {
-///     some_field: u16,
-/// }
-/// ```
-///
-/// ```compile_fail
-/// use mongodb_ext_derive::ConstName;
-///
-/// #[derive(ConstName)]
-/// #[const_name_key(THIS_IS_NOT_A_STRING_LITERAL)]
-/// struct MyStruct {
-///     some_field: u16,
-/// }
-/// ```
-#[proc_macro_derive(ConstName, attributes(const_name_value, const_name_key))]
-pub fn const_name_derive(items: TokenStream) -> TokenStream {
-    let ast: DeriveInput = parse_macro_input!(items as DeriveInput);
-
-    // save span for later
-    let key_value_span = ast.ident.span();
-    // create default constant variable value
-    let mut value = ast.ident.to_string();
-    // create default constant variable name
-    let mut key = value.to_case(Case::UpperSnake);
-
-    // loop through all attributes on the struct to find relevant ones
-    'outer: for attr in ast.attrs {
-        if attr.path.is_ident("const_name_key") {
-            key = attr
-                // parse key as literal
-                .parse_args::<Literal>()
-                .expect("Could not parse `const_name` derive attribute's arguments as literal")
-                // convert to string
-                .to_string()
-                // strip quotes
-                .replace("\"", "");
-        } else if attr.path.is_ident("const_name_value") {
-            let given_case = attr
-                // parse value case as path
-                .parse_args::<TypePath>()
-                .expect("Could not parse `name_case` derive attribute's arguments as path");
-            // get last part of parsed path and convert it to string
-            let given_case: String = given_case
-                .path
-                .segments
-                .last()
-                .expect("Could not get identifier of given path in `name_case` derive attribute")
-                .ident
-                .to_string();
-            // search for a matching case in Case enum
-            for case in Case::all_cases() {
-                if format!("{:?}", case).eq(&given_case) {
-                    // case found, set it and continue the outer loop
-                    value = value.to_case(Case::from(case));
-                    continue 'outer;
-                }
-            }
-            // no matching cases found
-            panic!(
-                "Supplied attribute to `name_case` is invalid ({})",
-                given_case
-            );
-        }
-    }
-
-    let mut ts: TokenStream2 = quote!(pub const);
-    Ident::new(&key, key_value_span).to_tokens(&mut ts);
-    ts.extend(quote!(: &str =));
-    LitStr::new(&value, key_value_span).to_tokens(&mut ts);
-    ts.extend(quote!(;));
-    ts.into()
+#[proc_macro]
+pub fn case(input: TokenStream) -> TokenStream {
+    parse_macro_input!(input as CaseInput)
+        .0
+        .to_token_stream()
+        .into()
 }
