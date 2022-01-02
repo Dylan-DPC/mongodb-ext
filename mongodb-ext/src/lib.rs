@@ -2,7 +2,15 @@
 
 //To make [`mongo_db`] work reliably a couple of re-exports are needed, these are not relevant for using the macro.
 #[doc(hidden)]
-pub use {mongodb, mongodb_ext_derive, paste, serde};
+pub use {async_trait, mongodb, mongodb_ext_derive, paste, serde};
+
+#[doc(hidden)]
+pub mod traits;
+
+#[doc(hidden)]
+pub use crate::mongodb_ext_derive::case;
+
+pub use crate::traits::{MongoClient, MongoCollection};
 
 /// Defines the default type for the `_id` field.
 pub type DefaultId = String;
@@ -26,15 +34,18 @@ macro_rules! expand_collection {
     ) => {
         $crate::paste::paste! {
             #[doc = "Represents the [`" $coll_name "`] collection in mongodb."]
-            #[derive($crate::serde::Deserialize, $crate::serde::Serialize, $crate::mongodb_ext_derive::ConstName)]
+            #[derive($crate::serde::Deserialize, $crate::serde::Serialize)]
             #[serde(rename_all = "camelCase")]
-            #[const_name_value(Camel)]
             $(#[$additional_coll_attr])*
             pub struct $coll_name {
                 $(
                     $(#[$additional_field_attr])*
                     pub [<$field:snake:lower>]: $field_type
                 ),*
+            }
+
+            impl $crate::MongoCollection for $coll_name {
+                const NAME: &'static str = $crate::case!($coll_name => Camel);
             }
         }
     };
@@ -106,9 +117,6 @@ macro_rules! expand_main_client {
     ) => {
         $crate::paste::paste! {
             #[doc = "Client to interact with the [`" $db_name "`] database."]
-            #[derive($crate::mongodb_ext_derive::ConstName)]
-            #[const_name_value(Camel)]
-            #[const_name_key("DB_NAME")]
             $(#[$additional_db_attr])*
             pub struct $db_name {
                 pub client: $crate::mongodb::Client,
@@ -116,25 +124,31 @@ macro_rules! expand_main_client {
                 $(pub [<$coll_name:snake:lower _coll>]: $crate::mongodb::Collection<schema::$coll_name>),+
             }
 
-            impl $db_name {
-                #[doc = "Initializer funtion of the database."]
-                pub async fn new(connection_str: &str) -> std::result::Result<Self, std::string::String> {
+            #[$crate::async_trait::async_trait]
+            impl $crate::MongoClient for $db_name {
+                const NAME: &'static str = $crate::case!($db_name => Camel);
+
+                async fn new(connection_str: &str) -> $crate::mongodb::error::Result<Self> {
                     let client = match $crate::mongodb::Client::with_uri_str(connection_str).await {
                         $crate::mongodb::error::Result::Ok(client) => client,
-                        $crate::mongodb::error::Result::Err(e) => return Err(format!("Could not initialize mongodb client: {}", e)),
+                        $crate::mongodb::error::Result::Err(e) => return $crate::mongodb::error::Result::Err(e),
                     };
-                    let database = client.database(DB_NAME);
-                    $(let [<$coll_name:snake:lower _coll>] = database.collection(schema::[<$coll_name:snake:upper>]);)+
-                    std::result::Result::Ok(Self {
-                        client,
-                        database,
-                        $([<$coll_name:snake:lower _coll>]),+
-                    })
+                    let database = client.database(Self::NAME);
+                    // create a scope here to hygienically `use` the trait.
+                    {
+                        use $crate::MongoCollection;
+                        $(
+                            let [<$coll_name:snake:lower _coll>] = database.collection(schema::$coll_name::NAME);
+                        )+
+                        $crate::mongodb::error::Result::Ok(Self {
+                            client,
+                            database,
+                            $([<$coll_name:snake:lower _coll>]),+
+                        })
+                    }
                 }
 
-                #[doc = "Method that sends a ping command to the database."]
-                #[allow(dead_code)]
-                pub async fn ping(&self) -> $crate::mongodb::error::Result<$crate::mongodb::bson::document::Document> {
+                async fn ping(&self) -> $crate::mongodb::error::Result<$crate::mongodb::bson::document::Document> {
                     self.database.run_command($crate::mongodb::bson::doc!{"ping": 1}, std::option::Option::None).await
                 }
             }
@@ -153,37 +167,23 @@ macro_rules! expand_main_client {
 ///
 /// The main database handler has the following attributes:
 /// - Its name represents the database's name (eg. a database named `MyDatabase` has a struct `mongo::MyDatabase`).
-/// - It has an initializer function:
-///     `pub async fn new(connection_str: &str) -> Result<Self, String>`
-/// - It has a ping function that sends a ping message to the database:
-///     `pub async fn ping(&self) -> mongodb::error::Result<mongodb::bson::document::Document>`
+/// - It implements the [`MongoClient`] trait.
 /// - It contains handles to all given collections inside the database.
-///     These handles have the format `{collection_name}_coll` where `{collection_name}` represents the collection's name in snake_case.
+///     These handles have the format `{collection_name}_coll` where `{collection_name}` represents the collection's name in `snake_case`.
 /// - It also contains a [`client`](mongodb::Client) and a [`database`](mongodb::Database) field for you to use.
 ///
 /// All collections are wrapped in an additional public module named `schema`.
 ///
-/// Each collection also has its own struct which stores all specified fields.
-/// All collections' structs implement [`Serialize`](serde::Serialize) and [`Deserialize`](serde::Deserialize).
+/// Each collection has its own struct which stores all specified fields.
+/// All collection structs implement [`Serialize`](serde::Serialize), [`Deserialize`](serde::Deserialize) and [`MongoCollection`].
 ///
 /// By default a field `_id` gets added to each collection automatically:
-///     `pub _id: Option<DefaultId>` ([`DefaultId`]).
+///     `pub _id: Option<DefaultId>` (see [`DefaultId`] for more info).
 /// This field needs to exist for you to be able to obtain an `_id` field from the database.
 /// When serializing, `_id` gets skipped if it is [`None`].
 /// All fields except `_id` get renamed to `camelCase` when serializing (converting `_id` to `camelCase` results in `id`).
 ///
-/// Additionally the following constants are specified:
-/// - `mongo::DB_NAME` is set to the database's name in `camelCase`.
-/// - `mongo::schema::{COLLECTION_NAME}` where `{COLLECTION_NAME}` represents each collection's name in screaming snake case. Set to the collection's name in `camelCase`.
-///
-/// # Hygiene
-///
-/// All structs / constants / functions are wrapped in a public module called `mongo`.
-/// All structs / constants that refer to a collection are wrapped in an additional public module called `schema`.
-/// This is done to maintain more hygiene by exposing less items.
-/// A better hygiene creates less interference of the macro and its surrounding items.
-///
-/// In addition to this measure, all paths referred by the code in the macro are full paths, thus there should be no type interference.
+/// _Note_: All structs' names in `camelCase` can be accessed via the [`MongoClient`] / [`MongoCollection`] trait.
 ///
 /// # Examples
 ///
@@ -202,7 +202,7 @@ macro_rules! expand_main_client {
 ///     }
 /// }
 ///
-/// // _id is now u128
+/// // _id is now u128 instead of `DefaultId`
 /// let some_document = mongo::schema::SomeCollection {
 ///     _id: Some(255),
 ///     first_name: String::from("Bob")
@@ -217,15 +217,16 @@ macro_rules! expand_main_client {
 /// mongo_db! {
 ///     SomeDatabase {
 ///         SomeCollection<_id: none> {
-///             email_address: String,
+///             #[serde(skip_serializing_if = "Option::is_none")]
+///             email_address: Option<String>,
 ///             first_name: String,
 ///         }
 ///     }
 /// }
 ///
-/// // no _id exists, this example assumes that users are addressed via their email address
+/// // no `_id` exists, this example assumes that users are addressed via their email address
 /// let some_document = mongo::schema::SomeCollection {
-///     email_address: String::from("bob@example.com"),
+///     email_address: Some(String::from("bob@example.com")),
 ///     first_name: String::from("Bob")
 /// };
 /// ```
@@ -260,7 +261,7 @@ macro_rules! expand_main_client {
 ///     _id: Some(String::from("my_id")),
 ///     some_field: 1,
 /// };
-/// // `_id` field omitted
+/// // `_id` field disabled
 /// let and_yet_another_document = mongo::schema::AndYetAnother {
 ///     name: String::from("Bob"),
 ///     email: String::from("bob@example.com")
@@ -326,7 +327,7 @@ macro_rules! expand_main_client {
 /// ## General Examples
 ///
 /// ```rust
-/// use mongodb_ext::mongo_db;
+/// use mongodb_ext::{mongo_db, MongoClient, MongoCollection};
 /// use serde_json::ser;
 ///
 /// mongo_db! {
@@ -357,12 +358,12 @@ macro_rules! expand_main_client {
 ///     String::from("{\"_id\":\"my-custom-ID\",\"firstName\":\"alice\"}")
 /// );
 ///
-/// assert_eq!("someCollection", mongo::schema::SOME_COLLECTION);
-/// assert_eq!("someDatabase", mongo::DB_NAME);
+/// assert_eq!("someCollection", mongo::schema::SomeCollection::NAME);
+/// assert_eq!("someDatabase", mongo::SomeDatabase::NAME);
 /// ```
 ///
 /// ```rust
-/// use mongodb_ext::mongo_db;
+/// use mongodb_ext::{mongo_db, MongoCollection, MongoClient};
 ///
 /// mongo_db! {
 ///     #[derive(Debug, Clone)]
@@ -381,9 +382,9 @@ macro_rules! expand_main_client {
 /// }
 ///
 /// // all constants that were defined
-/// assert_eq!("myDatabase", mongo::DB_NAME);
-/// assert_eq!("myFirstCollection", mongo::schema::MY_FIRST_COLLECTION);
-/// assert_eq!("anotherCollection", mongo::schema::ANOTHER_COLLECTION);
+/// assert_eq!("myDatabase", mongo::MyDatabase::NAME);
+/// assert_eq!("myFirstCollection", mongo::schema::MyFirstCollection::NAME);
+/// assert_eq!("anotherCollection", mongo::schema::AnotherCollection::NAME);
 ///
 /// // initializer function and general usage
 /// // note that `tokio_test::block_on` is just a test function to run `async` code
@@ -469,8 +470,30 @@ mod test {
             #[derive(Debug)]
             QueuedItems {
                 something: Option<bool>,
+            },
+            #[derive(Debug)]
+            AnotherOne<_id: none> {
+                #[serde(rename = "thisFieldsNewName")]
+                renamed_field: String,
+                #[serde(skip_serializing)]
+                ignored_field: u64
             }
         }
+    }
+
+    #[test]
+    pub fn check_field_attributes() {
+        use serde_json::ser;
+
+        let another_one = mongo::schema::AnotherOne {
+            renamed_field: String::from("something"),
+            ignored_field: 1,
+        };
+
+        assert_eq!(
+            ser::to_string(&another_one).expect("Could not serialize AnotherOne"),
+            String::from("{\"thisFieldsNewName\":\"something\"}")
+        );
     }
 
     #[test]
@@ -565,22 +588,26 @@ mod test {
 
     #[test]
     pub fn check_constants() {
-        assert_eq!("databaseOfDoom", mongo::DB_NAME);
-        assert_eq!("items", mongo::schema::ITEMS);
-        assert_eq!("queuedItems", mongo::schema::QUEUED_ITEMS);
+        use super::traits::*;
+        assert_eq!("databaseOfDoom", mongo::DatabaseOfDoom::NAME);
+        assert_eq!("items", mongo::schema::Items::NAME);
+        assert_eq!("queuedItems", mongo::schema::QueuedItems::NAME);
     }
 
     /// This test is rather useless, but it's currently the best way to test the [`DatabaseOfDoom::new`] function.
     #[test]
     pub fn check_initializer() {
+        use super::traits::MongoClient;
         // try to initialize with an invalid connection string
         if let Err(e) =
             tokio_test::block_on(mongo::DatabaseOfDoom::new("invalid connection string"))
         {
             // make sure the correct error message is produced
             assert_eq!(
-                &e,
-                "Could not initialize mongodb client: An invalid argument was provided: connection string contains no scheme"
+                format!("{}", e),
+                String::from(
+                    "An invalid argument was provided: connection string contains no scheme"
+                )
             );
         } else {
             // this should really not happen
