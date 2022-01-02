@@ -1,4 +1,4 @@
 mongodb-ext/target/
-mongodb-ext-derive/target/
 mongodb-ext/Cargo.lock
+mongodb-ext-derive/target/
 mongodb-ext-derive/Cargo.lock
