@@ -12,7 +12,7 @@ pub use crate::mongodb_ext_derive::case;
 
 pub use crate::traits::{MongoClient, MongoCollection};
 
-/// Defines the default type for the `_id` field.
+/// Defines the default type inside an [`Option`] for the `_id` field.
 pub type DefaultId = String;
 
 /// Expands one collection.
@@ -31,6 +31,9 @@ macro_rules! expand_collection {
                 $field:ident: $field_type:ty
             ),*$(,)?
         }
+        $(-{
+            $($inner_tokens2:tt)+
+        })?
     ) => {
         $crate::paste::paste! {
             #[doc = "Represents the [`" $coll_name "`] collection in mongodb."]
@@ -47,6 +50,12 @@ macro_rules! expand_collection {
             impl $crate::MongoCollection for $coll_name {
                 const NAME: &'static str = $crate::case!($coll_name => Camel);
             }
+
+            $(
+                impl $coll_name {
+                    $($inner_tokens2)+
+                }
+            )?
         }
     };
     // specific type for `_id` given, add it and invoke again with `_id: none` to avoid adding the `_id` field again
@@ -58,6 +67,9 @@ macro_rules! expand_collection {
                 $field:ident: $field_type:ty
             ),*$(,)?
         }
+        $(-{
+            $($inner_tokens2:tt)+
+        })?
     ) => {
         $crate::expand_collection! {
             $(#[$additional_coll_attr])*
@@ -70,6 +82,9 @@ macro_rules! expand_collection {
                     $field: $field_type
                 ),*
             }
+            $(-{
+                $($inner_tokens2)+
+            })?
         }
     };
     // no specific type for `_id` given, add `DefaultId` and invoke again
@@ -81,6 +96,9 @@ macro_rules! expand_collection {
                 $field:ident: $field_type:ty
             ),*$(,)?
         }
+        $(-{
+            $($inner_tokens2:tt)+
+        })?
     ) => {
         $crate::expand_collection! {
             $(#[$additional_coll_attr])*
@@ -90,6 +108,9 @@ macro_rules! expand_collection {
                     $field: $field_type
                 ),*
             }
+            $(-{
+                $($inner_tokens2)+
+            })?
         }
     };
 }
@@ -114,6 +135,9 @@ macro_rules! expand_main_client {
                 }
             ),+
         }
+        $(-{
+            $($impl:tt)+
+        })?
     ) => {
         $crate::paste::paste! {
             #[doc = "Client to interact with the [`" $db_name "`] database."]
@@ -152,6 +176,11 @@ macro_rules! expand_main_client {
                     self.database.run_command($crate::mongodb::bson::doc!{"ping": 1}, std::option::Option::None).await
                 }
             }
+            $(
+                impl $db_name {
+                    $($impl)+
+                }
+            )?
         }
     };
 }
@@ -186,6 +215,94 @@ macro_rules! expand_main_client {
 /// _Note_: All structs' names in `camelCase` can be accessed via the [`MongoClient`] / [`MongoCollection`] trait.
 ///
 /// # Examples
+///
+/// ## General Examples
+///
+/// ```rust
+/// use mongodb_ext::{mongo_db, MongoClient, MongoCollection};
+/// use serde_json::ser;
+///
+/// mongo_db! {
+///     // database name
+///     SomeDatabase {
+///         // additional attributes for the collection
+///         #[derive(Debug, Clone)]
+///         // collection name
+///         SomeCollection {
+///             // collection fields
+///             first_name: String,
+///         }
+///     }
+/// }
+///
+/// let mut some_document = mongo::schema::SomeCollection {
+///     _id: None,
+///     first_name: String::from("alice")
+/// };
+///
+/// // When serializing, `_id` is skipped only if it is `None`.
+/// // Note the key conversion to `camelCase`.
+/// assert_eq!(
+///     ser::to_string(&some_document).unwrap(),
+///     String::from("{\"firstName\":\"alice\"}")
+/// );
+///
+/// // update `_id` field to include in serialization.
+/// some_document._id = Some(String::from("my-custom-ID"));
+/// assert_eq!(
+///     ser::to_string(&some_document).unwrap(),
+///     String::from("{\"_id\":\"my-custom-ID\",\"firstName\":\"alice\"}")
+/// );
+///
+/// // constants store the collection / database names in `camelCase`
+/// assert_eq!("someCollection", mongo::schema::SomeCollection::NAME);
+/// assert_eq!("someDatabase", mongo::SomeDatabase::NAME);
+/// ```
+///
+/// Multiple collections need to be separated by `;`, a trailing `;` is optional:
+///
+/// ```rust
+/// use mongodb_ext::{mongo_db, MongoCollection, MongoClient};
+///
+/// mongo_db! {
+///     #[derive(Debug, Clone)]
+///     MyDatabase {
+///         #[derive(Debug, Clone)]
+///         MyFirstCollection {
+///             first_name: String,
+///             last_name: String,
+///             age: u8,
+///         };
+///         #[derive(Debug)]
+///         AnotherCollection {
+///             some_field: String
+///         };
+///     }
+/// }
+///
+/// // all constants that were defined
+/// assert_eq!("myDatabase", mongo::MyDatabase::NAME);
+/// assert_eq!("myFirstCollection", mongo::schema::MyFirstCollection::NAME);
+/// assert_eq!("anotherCollection", mongo::schema::AnotherCollection::NAME);
+///
+/// // initializer function and general usage
+/// // note that `tokio_test::block_on` is just a test function to run `async` code in doc tests
+///
+/// let mongo = tokio_test::block_on(mongo::MyDatabase::new("mongodb://example.com"))
+///     .expect("Could not create mongoDB client");
+///
+/// let bob = mongo::schema::MyFirstCollection {
+///     _id: None,
+///     first_name: String::from("Bob"),
+///     last_name: String::from("Bob's last name"),
+///     age: 255,
+/// };
+///
+/// // This should fail beause there is no actual mongoDB service running at the specified connection.
+/// assert!(tokio_test::block_on(
+///     mongo.my_first_collection_coll.insert_one(bob, None)
+/// ).is_err());
+/// ```
 ///
 /// ## Manipulating / Removing `_id`
 ///
@@ -240,10 +357,10 @@ macro_rules! expand_main_client {
 ///     SomeDatabase {
 ///         SomeCollection<_id: u128> {
 ///             first_name: String,
-///         },
+///         };
 ///         Another {
 ///             some_field: u32,
-///         },
+///         };
 ///         AndYetAnother<_id: none> {
 ///             email: String,
 ///             name: String,
@@ -282,7 +399,7 @@ macro_rules! expand_main_client {
 ///         Items {
 ///             counter: u16,
 ///             name: String
-///         },
+///         };
 ///     }
 /// }
 ///
@@ -324,92 +441,90 @@ macro_rules! expand_main_client {
 /// );
 /// ```
 ///
-/// ## General Examples
+/// ## Adding your own code
+///
+/// Additional code for the `mongo` and `schema` modules can be specified in curly braces (`{` / `}`).
 ///
 /// ```rust
-/// use mongodb_ext::{mongo_db, MongoClient, MongoCollection};
-/// use serde_json::ser;
+/// use mongodb_ext::mongo_db;
 ///
 /// mongo_db! {
+///     // specify code to be in `mongo` here:
+///     {
+///         pub fn this_is_a_function_in_mongo() -> bool { true }
+///     }
 ///     SomeDatabase {
-///         #[derive(Debug, Clone)]
+///         // specify code to be in `schema` here:
+///         {
+///             pub fn this_is_a_function_in_schema() -> bool { true }
+///             use std::collections::HashMap;
+///         }
 ///         SomeCollection {
-///             first_name: String,
+///             dict: HashMap<String, u32>,
 ///         }
 ///     }
 /// }
 ///
-/// let mut some_document = mongo::schema::SomeCollection {
-///     _id: None,
-///     first_name: String::from("alice")
-/// };
-///
-/// // When serializing, `_id` is skipped only if `None`.
-/// // Note the key conversion to `camelCase`.
-/// assert_eq!(
-///     ser::to_string(&some_document).unwrap(),
-///     String::from("{\"firstName\":\"alice\"}")
-/// );
-///
-/// // update `_id` field to include in serialization.
-/// some_document._id = Some(String::from("my-custom-ID"));
-/// assert_eq!(
-///     ser::to_string(&some_document).unwrap(),
-///     String::from("{\"_id\":\"my-custom-ID\",\"firstName\":\"alice\"}")
-/// );
-///
-/// assert_eq!("someCollection", mongo::schema::SomeCollection::NAME);
-/// assert_eq!("someDatabase", mongo::SomeDatabase::NAME);
+/// assert!(mongo::this_is_a_function_in_mongo());
+/// assert!(mongo::schema::this_is_a_function_in_schema());
 /// ```
 ///
+/// ### Code positioning
+///
+/// `Impl`ementations can be easily added by using the preset feature:
+///
 /// ```rust
-/// use mongodb_ext::{mongo_db, MongoCollection, MongoClient};
+/// use mongodb_ext::mongo_db;
 ///
 /// mongo_db! {
-///     #[derive(Debug, Clone)]
-///     MyDatabase {
-///         #[derive(Debug, Clone)]
-///         MyFirstCollection {
-///             first_name: String,
-///             last_name: String,
-///             age: u8,
-///         },
-///         #[derive(Debug)]
-///         AnotherCollection {
-///             some_field: String
+///     // specify globally needed code in `mongo` here:
+///     {
+///         use std::collections::HashMap;
+///     }
+///     SomeDatabase {
+///         // specify globally needed code in `schema` here:
+///         {
+///             use std::collections::HashMap;
 ///         }
+///
+///         // specify collection-dependent code in an additional block below the collection connected with a `-`:
+///         SomeCollection {
+///             dict: HashMap<String, u32>,
+///         }-{
+///             pub fn some_collection_function() -> bool { true }
+///         };
+///         AnotherCollection {}-{
+///             pub fn id(&self) -> &Option<String> { &self._id }
+///         }
+///     }-{
+///         /// specify `mongo` implementations here:
+///         pub fn give_bool() -> bool { true }
 ///     }
 /// }
 ///
-/// // all constants that were defined
-/// assert_eq!("myDatabase", mongo::MyDatabase::NAME);
-/// assert_eq!("myFirstCollection", mongo::schema::MyFirstCollection::NAME);
-/// assert_eq!("anotherCollection", mongo::schema::AnotherCollection::NAME);
+/// assert!(mongo::SomeDatabase::give_bool());
+/// assert!(mongo::schema::SomeCollection::some_collection_function());
 ///
-/// // initializer function and general usage
-/// // note that `tokio_test::block_on` is just a test function to run `async` code
-///
-/// let mongo = tokio_test::block_on(mongo::MyDatabase::new("mongodb://example.com"))
-///     .expect("Could not create mongoDB client");
-///
-/// let bob = mongo::schema::MyFirstCollection {
-///     _id: None,
-///     first_name: String::from("Bob"),
-///     last_name: String::from("Bob's last name"),
-///     age: 255,
+/// let another_collection = mongo::schema::AnotherCollection {
+///     _id: Some(String::from("id")),
 /// };
-///
-/// // This should fail beause there is no actual mongoDB service running at the specified connection.
-/// assert!(tokio_test::block_on(
-///     mongo.my_first_collection_coll.insert_one(bob, None)
-/// ).is_err());
+/// assert_eq!(*another_collection.id(), Some(String::from("id")));
 /// ```
 #[macro_export]
 macro_rules! mongo_db {
     // only one match, the real magic happens in `expand_collection` and `expand_main_client`
     (
+        $({
+            $($outer_tokens:tt)+
+        })?
+
         $(#[$additional_db_attr:meta])*
         $db_name:ident {
+
+            $({
+                $($inner_tokens:tt)+
+            })?
+
             $(
                 $(#[$additional_coll_attr:meta])*
                 $coll_name:ident$(<_id: $id_spec:ident>)? {
@@ -418,11 +533,21 @@ macro_rules! mongo_db {
                         $field:ident: $field_type:ty
                     ),*$(,)?
                 }
-            ),+$(,)?
+                $(-{
+                    $($inner_impl:tt)+
+                })?
+            );+$(;)?
         }
+        $(-{
+            $($outer_impl:tt)+
+        })?
     ) => {
         pub mod mongo {
+            $($($outer_tokens)*)?
+
             pub mod schema {
+                $($($inner_tokens)*)?
+
                 $(
                     $crate::expand_collection! {
                         $(#[$additional_coll_attr])*
@@ -432,6 +557,9 @@ macro_rules! mongo_db {
                                 $field: $field_type
                             ),*
                         }
+                        $(-{
+                            $($inner_impl)+
+                        })?
                     }
                 )+
             }
@@ -449,9 +577,11 @@ macro_rules! mongo_db {
                         }
                     ),+
                 }
+                $(-{
+                    $($outer_impl)+
+                })?
             }
         }
-
     };
 }
 
@@ -459,26 +589,49 @@ macro_rules! mongo_db {
 mod test {
     use super::mongo_db;
 
+    #[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
+    pub struct MyLocalType;
+
     mongo_db! {
         #[derive(Debug, Clone)]
         DatabaseOfDoom {
+            {
+                use std::collections::HashMap;
+                use super::super::MyLocalType;
+            }
+
+            #[derive(Debug, Clone)]
+            TypeCheckCollection {
+                map: HashMap<String, u32>,
+                local: MyLocalType
+            }-{
+                pub fn collection_code() -> bool { true }
+            };
             #[derive(Debug, Clone, PartialEq)]
             Items {
                 counter: u16,
                 name: String
-            },
+            };
             #[derive(Debug)]
             QueuedItems {
                 something: Option<bool>,
-            },
+            };
             #[derive(Debug)]
             AnotherOne<_id: none> {
                 #[serde(rename = "thisFieldsNewName")]
                 renamed_field: String,
                 #[serde(skip_serializing)]
                 ignored_field: u64
-            }
+            };
+        }-{
+            pub fn mongo_code() -> bool { true }
         }
+    }
+
+    #[test]
+    pub fn check_additional_code() {
+        assert!(mongo::DatabaseOfDoom::mongo_code());
+        assert!(mongo::schema::TypeCheckCollection::collection_code());
     }
 
     #[test]
