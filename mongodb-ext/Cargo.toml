@@ -1,9 +1,9 @@
 [package]
 name = "mongodb-ext"
 description = "An extension crate for mongodb to create a database setup without boilerplate."
-version = "2.1.0"
+version = "3.1.0"
 edition = "2021"
-keywords = ["mongodb", "macro", "collection", "database"]
+keywords = ["mongodb", "macro", "collection", "database", "schema", "versioning"]
 categories = ["database", "development-tools"]
 readme = "README.md"
 license-file = "../LICENSE"
