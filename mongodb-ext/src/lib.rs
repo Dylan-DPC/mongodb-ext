@@ -1,6 +1,6 @@
 //! This crate provides the macro [`mongo_db`] to model a mongoDB database.
 
-//To make [`mongo_db`] work reliably a couple of re-exports are needed, these are not relevant for using the macro.
+/// To make [`mongo_db`] work reliably a couple of re-exports are needed, these are not relevant for using the macro.
 #[doc(hidden)]
 pub use {async_trait, mongodb, mongodb_ext_derive, paste, serde};
 
@@ -13,7 +13,133 @@ pub use crate::mongodb_ext_derive::case;
 pub use crate::traits::{MongoClient, MongoCollection};
 
 /// Defines the default type inside an [`Option`] for the `_id` field.
-pub type DefaultId = String;
+///
+/// Re-export from [`mongodb::bson::oid::ObjectId`].
+///
+pub use mongodb::bson::oid::ObjectId as DefaultId;
+
+/// Defines the default value used as schema version in [`MongoCollection::SCHEMA_VERSION`] when not specified otherwise.
+pub const DEFAULT_SCHEMA_VERSION: i32 = 1;
+
+/// This macro parses the per-collection parameters in a more usable format.
+#[macro_export]
+#[doc(hidden)]
+macro_rules! parse_collection_params {
+    (
+        version: $version:literal,
+        _id: $id:ident
+        $($rest:tt)*
+    ) => {
+        $crate::expand_collection_version! {
+            version = $version;
+            id = $id;
+            $($rest)*
+        }
+    };
+    (
+        _id: $id:ident,
+        version: $version:literal
+        $($rest:tt)*
+    ) => {
+        $crate::expand_collection_version! {
+            version = $version;
+            id = $id;
+            $($rest)*
+        }
+    };
+    (
+        version: $version:literal
+        $($rest:tt)*
+    ) => {
+        $crate::expand_collection_version! {
+            version = $version;
+            id = ;
+            $($rest)*
+        }
+    };
+    (
+        _id: $id:ident
+        $($rest:tt)*
+    ) => {
+        $crate::expand_collection_version! {
+            version = ;
+            id = $id;
+            $($rest)*
+        }
+    };
+    (
+        $($rest:tt)*
+    ) => {
+        $crate::expand_collection_version! {
+            version = ;
+            id = ;
+            $($rest)*
+        }
+    };
+}
+
+/// Expands schema version that is given in `<` / `>` behind each collection.
+#[macro_export]
+#[doc(hidden)]
+macro_rules! expand_collection_version {
+    (
+        version = ;
+        $($rest:tt)*
+    ) => {
+        $crate::expand_collection_id!{
+            version = $crate::DEFAULT_SCHEMA_VERSION;
+            $($rest)*
+        }
+    };
+    (
+        version = $version:literal;
+        $($rest:tt)*
+    ) => {
+        $crate::expand_collection_id!{
+            version = $version;
+            $($rest)*
+        }
+    };
+}
+
+/// Expands collection _id that is given in `<` / `>` behind each collection.
+#[macro_export]
+#[doc(hidden)]
+macro_rules! expand_collection_id {
+    (
+        version = $version:expr;
+        id = ;
+        $($rest:tt)*
+    ) => {
+        $crate::expand_collection!{
+            version = $version;
+            id = $crate::DefaultId;
+            $($rest)*
+        }
+    };
+    (
+        version = $version:expr;
+        id = none;
+        $($rest:tt)*
+    ) => {
+        $crate::expand_collection!{
+            version = $version;
+            id = none;
+            $($rest)*
+        }
+    };
+    (
+        version = $version:expr;
+        id = $id:ty;
+        $($rest:tt)*
+    ) => {
+        $crate::expand_collection!{
+            version = $version;
+            id = $id;
+            $($rest)*
+        }
+    };
+}
 
 /// Expands one collection.
 ///
@@ -24,8 +150,10 @@ pub type DefaultId = String;
 macro_rules! expand_collection {
     // invoked with `_id: none`, thus assume `_id` is added already and finally expand to collection
     (
+        version = $schema_version:expr;
+        id = none;
         $(#[$additional_coll_attr:meta])*
-        $coll_name:ident<_id: none> {
+        $coll_name:ident {
             $(
                 $(#[$additional_field_attr:meta])*
                 $field:ident: $field_type:ty
@@ -49,6 +177,7 @@ macro_rules! expand_collection {
 
             impl $crate::MongoCollection for $coll_name {
                 const NAME: &'static str = $crate::case!($coll_name => Camel);
+                const SCHEMA_VERSION: i32 = $schema_version;
             }
 
             $(
@@ -60,35 +189,8 @@ macro_rules! expand_collection {
     };
     // specific type for `_id` given, add it and invoke again with `_id: none` to avoid adding the `_id` field again
     (
-        $(#[$additional_coll_attr:meta])*
-        $coll_name:ident<_id: $explicit_id_type:ty> {
-            $(
-                $(#[$additional_field_attr:meta])*
-                $field:ident: $field_type:ty
-            ),*$(,)?
-        }
-        $(-{
-            $($inner_tokens2:tt)+
-        })?
-    ) => {
-        $crate::expand_collection! {
-            $(#[$additional_coll_attr])*
-            $coll_name<_id: none> {
-                #[serde(skip_serializing_if = "std::option::Option::is_none")]
-                #[serde(rename = "_id")]
-                _id: std::option::Option<$explicit_id_type>,
-                $(
-                    $(#[$additional_field_attr])*
-                    $field: $field_type
-                ),*
-            }
-            $(-{
-                $($inner_tokens2)+
-            })?
-        }
-    };
-    // no specific type for `_id` given, add `DefaultId` and invoke again
-    (
+        version = $schema_version:expr;
+        id = $explicit_id_type:ty;
         $(#[$additional_coll_attr:meta])*
         $coll_name:ident {
             $(
@@ -101,16 +203,25 @@ macro_rules! expand_collection {
         })?
     ) => {
         $crate::expand_collection! {
+            version = $schema_version;
+            id = none;
             $(#[$additional_coll_attr])*
-            $coll_name<_id: $crate::DefaultId> {
+            $coll_name {
+                #[serde(skip_serializing_if = "std::option::Option::is_none")]
+                #[serde(rename = "_id")]
+                _id: std::option::Option<$explicit_id_type>,
                 $(
                     $(#[$additional_field_attr])*
                     $field: $field_type
                 ),*
+            }-{
+                #[doc = "Returns a reference to the `_id` field."]
+                #[allow(dead_code)]
+                pub fn id(&self) -> &Option<$explicit_id_type> {
+                    &self._id
+                }
+                $($($inner_tokens2)+)?
             }
-            $(-{
-                $($inner_tokens2)+
-            })?
         }
     };
 }
@@ -140,12 +251,15 @@ macro_rules! expand_main_client {
         })?
     ) => {
         $crate::paste::paste! {
-            #[doc = "Client to interact with the [`" $db_name "`] database."]
+            #[doc = "Client to interact with the `" $db_name "` database."]
             $(#[$additional_db_attr])*
             pub struct $db_name {
                 pub client: $crate::mongodb::Client,
                 pub database: $crate::mongodb::Database,
-                $(pub [<$coll_name:snake:lower _coll>]: $crate::mongodb::Collection<schema::$coll_name>),+
+                $(
+                    #[doc = "Handle to the `" $coll_name "` collection"]
+                    pub [<$coll_name:snake:lower _coll>]: $crate::mongodb::Collection<schema::$coll_name>
+                ),+
             }
 
             #[$crate::async_trait::async_trait]
@@ -190,6 +304,8 @@ macro_rules! expand_main_client {
 /// This macro creates structs / functions / constants / modules that represent a mongoDB database.
 /// Being a macro (which is expanded at compile time) there is no run time performance penalty when using this macro.
 ///
+/// For a detailled syntax demonstration see [Examples](#examples).
+///
 /// # Structure
 ///
 /// This macro wraps everything in a module called `mongo`.
@@ -219,7 +335,7 @@ macro_rules! expand_main_client {
 /// ## General Examples
 ///
 /// ```rust
-/// use mongodb_ext::{mongo_db, MongoClient, MongoCollection};
+/// use mongodb_ext::{mongo_db, MongoClient, MongoCollection, DefaultId};
 /// use serde_json::ser;
 ///
 /// mongo_db! {
@@ -248,14 +364,16 @@ macro_rules! expand_main_client {
 /// );
 ///
 /// // update `_id` field to include in serialization.
-/// some_document._id = Some(String::from("my-custom-ID"));
+/// let oid = DefaultId::parse_str("0123456789ABCDEF01234567").unwrap();
+/// some_document._id = Some(oid);
 /// assert_eq!(
 ///     ser::to_string(&some_document).unwrap(),
-///     String::from("{\"_id\":\"my-custom-ID\",\"firstName\":\"alice\"}")
+///     String::from("{\"_id\":{\"$oid\":\"0123456789abcdef01234567\"},\"firstName\":\"alice\"}")
 /// );
 ///
-/// // constants store the collection / database names in `camelCase`
+/// // constants store the collection / database names in `camelCase` + collection version
 /// assert_eq!("someCollection", mongo::schema::SomeCollection::NAME);
+/// assert_eq!(1, mongo::schema::SomeCollection::SCHEMA_VERSION);
 /// assert_eq!("someDatabase", mongo::SomeDatabase::NAME);
 /// ```
 ///
@@ -283,7 +401,9 @@ macro_rules! expand_main_client {
 /// // all constants that were defined
 /// assert_eq!("myDatabase", mongo::MyDatabase::NAME);
 /// assert_eq!("myFirstCollection", mongo::schema::MyFirstCollection::NAME);
+/// assert_eq!(1, mongo::schema::MyFirstCollection::SCHEMA_VERSION);
 /// assert_eq!("anotherCollection", mongo::schema::AnotherCollection::NAME);
+/// assert_eq!(1, mongo::schema::AnotherCollection::SCHEMA_VERSION);
 ///
 /// // initializer function and general usage
 /// // note that `tokio_test::block_on` is just a test function to run `async` code in doc tests
@@ -298,7 +418,8 @@ macro_rules! expand_main_client {
 ///     age: 255,
 /// };
 ///
-/// // This should fail beause there is no actual mongoDB service running at the specified connection.
+/// // This should fail beause there is no actual mongoDB service running at the specified
+/// // connection.
 /// assert!(tokio_test::block_on(
 ///     mongo.my_first_collection_coll.insert_one(bob, None)
 /// ).is_err());
@@ -319,7 +440,7 @@ macro_rules! expand_main_client {
 ///     }
 /// }
 ///
-/// // _id is now u128 instead of `DefaultId`
+/// // _id is now `u128` instead of `DefaultId`
 /// let some_document = mongo::schema::SomeCollection {
 ///     _id: Some(255),
 ///     first_name: String::from("Bob")
@@ -351,7 +472,7 @@ macro_rules! expand_main_client {
 /// These features are unique for each collection:
 ///
 /// ```rust
-/// use mongodb_ext::mongo_db;
+/// use mongodb_ext::{mongo_db, DefaultId};
 ///
 /// mongo_db! {
 ///     SomeDatabase {
@@ -374,8 +495,9 @@ macro_rules! expand_main_client {
 ///     first_name: String::from("Bob")
 /// };
 /// // `_id` type default, eg. `DefaultId`
+/// let oid = DefaultId::parse_str("0123456789ABCDEF01234567").unwrap();
 /// let another_document = mongo::schema::Another {
-///     _id: Some(String::from("my_id")),
+///     _id: Some(oid),
 ///     some_field: 1,
 /// };
 /// // `_id` field disabled
@@ -385,7 +507,77 @@ macro_rules! expand_main_client {
 /// };
 /// ```
 ///
-/// ## Serializing from [`json!`](serde_json::json) and [`doc!`](mongodb::bson::doc)
+/// Each collection that does not have a parameter of `id: none` implements a function `id(&self)` that returns a reference to its ID:
+///
+/// ```rust
+/// use mongodb_ext::{mongo_db, DefaultId};
+///
+/// mongo_db! {
+///     SomeDatabase {
+///         SomeCollection<_id: u128> {};
+///         Another {};
+///     }
+/// }
+///
+/// // `id` returns `&Option<u128>`
+/// let some_collection = mongo::schema::SomeCollection {
+///     _id: Some(255),
+/// };
+/// assert_eq!(
+///     *some_collection.id(),
+///     Some(255)
+/// );
+///
+/// // `id` returns `&Option<DefaultId>`
+/// let oid = DefaultId::parse_str("0123456789ABCDEF01234567").unwrap();
+/// let another = mongo::schema::Another {
+///     _id: Some(oid.clone()),
+/// };
+/// assert_eq!(
+///     *another.id(),
+///     Some(oid)
+/// );
+/// ```
+///
+/// ## Versioning of your schema
+///
+/// Your database schema version is managed via [`MongoCollection::SCHEMA_VERSION`].
+///
+/// This can be modified like so:
+///
+/// ```rust
+/// use mongodb_ext::{mongo_db, MongoCollection};
+/// use serde_json::ser;
+///
+/// mongo_db! {
+///     SomeDatabase {
+///         // no schema version defaults to const `DEFAULT_SCHEMA_VERSION`
+///         Items {
+///             name: String,
+///         };
+///         // schema version of 200
+///         Queue<version: 200> {
+///             item: i32,
+///         };
+///         // schema version of 4
+///         SomeCollection<version: 4, _id: none> {
+///             first_name: String,
+///         };
+///         // schema version of 5
+///         FourthCollection<_id: String, version: 5> {};
+///     }
+/// }
+///
+/// // default schema version is 1
+/// assert_eq!(1, mongodb_ext::DEFAULT_SCHEMA_VERSION);
+///
+/// assert_eq!(mongo::schema::Items::SCHEMA_VERSION, 1);
+/// assert_eq!(mongo::schema::Queue::SCHEMA_VERSION, 200);
+/// assert_eq!(mongo::schema::SomeCollection::SCHEMA_VERSION, 4);
+/// assert_eq!(mongo::schema::FourthCollection::SCHEMA_VERSION, 5);
+/// ```
+///
+/// ## Serializing from [`json!`](serde_json::json) and [`doc!`](mongodb::bson::doc) macros
 ///
 /// ```rust
 /// use mongodb_ext::mongo_db;
@@ -474,7 +666,7 @@ macro_rules! expand_main_client {
 /// `Impl`ementations can be easily added by using the preset feature:
 ///
 /// ```rust
-/// use mongodb_ext::mongo_db;
+/// use mongodb_ext::{mongo_db, DefaultId};
 ///
 /// mongo_db! {
 ///     // specify globally needed code in `mongo` here:
@@ -484,20 +676,25 @@ macro_rules! expand_main_client {
 ///     SomeDatabase {
 ///         // specify globally needed code in `schema` here:
 ///         {
-///             use std::collections::HashMap;
+///             use {
+///                 std::collections::HashMap,
+///                 mongodb::bson::oid::ObjectId
+///             };
 ///         }
 ///
-///         // specify collection-dependent code in an additional block below the collection connected with a `-`:
+///         // specify collection-dependent code in an additional block below the
+///         // collection connected with a `-`:
 ///         SomeCollection {
 ///             dict: HashMap<String, u32>,
 ///         }-{
 ///             pub fn some_collection_function() -> bool { true }
 ///         };
+///         #[derive(Debug, PartialEq)]
 ///         AnotherCollection {}-{
-///             pub fn id(&self) -> &Option<String> { &self._id }
+///             pub fn from_id(id: ObjectId) -> Self { Self { _id: Some(id) } }
 ///         }
 ///     }-{
-///         /// specify `mongo` implementations here:
+///         // specify implementations on the database handler here:
 ///         pub fn give_bool() -> bool { true }
 ///     }
 /// }
@@ -505,10 +702,13 @@ macro_rules! expand_main_client {
 /// assert!(mongo::SomeDatabase::give_bool());
 /// assert!(mongo::schema::SomeCollection::some_collection_function());
 ///
-/// let another_collection = mongo::schema::AnotherCollection {
-///     _id: Some(String::from("id")),
-/// };
-/// assert_eq!(*another_collection.id(), Some(String::from("id")));
+/// let oid = DefaultId::parse_str("0123456789ABCDEF01234567").unwrap();
+/// assert_eq!(
+///     mongo::schema::AnotherCollection::from_id(oid.clone()),
+///     mongo::schema::AnotherCollection {
+///         _id: Some(oid),
+///     },
+/// );
 /// ```
 #[macro_export]
 macro_rules! mongo_db {
@@ -527,7 +727,7 @@ macro_rules! mongo_db {
 
             $(
                 $(#[$additional_coll_attr:meta])*
-                $coll_name:ident$(<_id: $id_spec:ident>)? {
+                $coll_name:ident$(<$($collection_param_name:ident: $collection_param_value:tt),+>)? {
                     $(
                         $(#[$additional_field_attr:meta])*
                         $field:ident: $field_type:ty
@@ -549,9 +749,14 @@ macro_rules! mongo_db {
                 $($($inner_tokens)*)?
 
                 $(
-                    $crate::expand_collection! {
+                    $crate::parse_collection_params! {
+                        $(
+                            $($collection_param_name: $collection_param_value),+
+                        )?
+
                         $(#[$additional_coll_attr])*
-                        $coll_name$(<_id: $id_spec>)? {
+
+                        $coll_name {
                             $(
                                 $(#[$additional_field_attr])*
                                 $field: $field_type
@@ -585,6 +790,11 @@ macro_rules! mongo_db {
     };
 }
 
+mongo_db! {
+    Db {
+        Coll {}
+    }
+}
 #[cfg(test)]
 mod test {
     use super::mongo_db;
@@ -601,14 +811,14 @@ mod test {
             }
 
             #[derive(Debug, Clone)]
-            TypeCheckCollection {
+            TypeCheckCollection<version: 2, _id: none> {
                 map: HashMap<String, u32>,
                 local: MyLocalType
             }-{
                 pub fn collection_code() -> bool { true }
             };
             #[derive(Debug, Clone, PartialEq)]
-            Items {
+            Items<version: 3> {
                 counter: u16,
                 name: String
             };
@@ -617,7 +827,7 @@ mod test {
                 something: Option<bool>,
             };
             #[derive(Debug)]
-            AnotherOne<_id: none> {
+            AnotherOne<_id: none, version: 29> {
                 #[serde(rename = "thisFieldsNewName")]
                 renamed_field: String,
                 #[serde(skip_serializing)]
@@ -626,6 +836,16 @@ mod test {
         }-{
             pub fn mongo_code() -> bool { true }
         }
+    }
+
+    #[test]
+    pub fn check_schema_versions() {
+        use crate::MongoCollection;
+
+        assert_eq!(mongo::schema::TypeCheckCollection::SCHEMA_VERSION, 2);
+        assert_eq!(mongo::schema::Items::SCHEMA_VERSION, 3);
+        assert_eq!(mongo::schema::QueuedItems::SCHEMA_VERSION, 1);
+        assert_eq!(mongo::schema::AnotherOne::SCHEMA_VERSION, 29);
     }
 
     #[test]
@@ -695,10 +915,13 @@ mod test {
 
     #[test]
     pub fn check_json_serialization_with_id() {
-        use serde_json::{from_value, json, Value};
+        use {
+            mongodb::bson::oid::ObjectId,
+            serde_json::{from_value, json, Value},
+        };
 
         let my_item: Value = json! ({
-            "_id": "my_fancy_id",
+            "_id": "0123456789ABCDEF01234567",
             "counter": 0,
             "name": "my_special_item"
         });
@@ -709,7 +932,7 @@ mod test {
         assert_eq!(
             my_collection_entry,
             mongo::schema::Items {
-                _id: Some(String::from("my_fancy_id")),
+                _id: Some(ObjectId::parse_str("0123456789ABCDEF01234567").unwrap()),
                 counter: 0,
                 name: String::from("my_special_item")
             }
@@ -718,10 +941,10 @@ mod test {
 
     #[test]
     pub fn check_doc_serialization_with_id() {
-        use mongodb::bson::{de::from_document, doc, Document};
+        use mongodb::bson::{de::from_document, doc, oid::ObjectId, Document};
 
         let my_item: Document = doc! {
-            "_id": "my_fancy_id",
+            "_id": "0123456789ABCDEF01234567",
             "counter": 0,
             "name": "my_special_item"
         };
@@ -732,7 +955,7 @@ mod test {
         assert_eq!(
             my_collection_entry,
             mongo::schema::Items {
-                _id: Some(String::from("my_fancy_id")),
+                _id: Some(ObjectId::parse_str("0123456789ABCDEF01234567").unwrap()),
                 counter: 0,
                 name: String::from("my_special_item")
             }

@@ -9,9 +9,15 @@ use crate::{
 pub trait MongoCollection {
     /// The collection's name.
     const NAME: &'static str;
+    /// The collection's schema version.
+    ///
+    /// Change that in your [`mongo_db!`](crate::mongo_db) invocation every time you change your schema.
+    ///
+    /// You do not actually need to use this in your schema, but it is implemented for your convinience.
+    const SCHEMA_VERSION: i32;
 }
 
-/// Trait that is implemented automatically on the database handler struct by [`mongo_db`].
+/// Async trait that is implemented automatically on the database handler struct by [`mongo_db`].
 #[async_trait]
 pub trait MongoClient
 where
