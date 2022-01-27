@@ -175,7 +175,7 @@ macro_rules! expand_collection {
             pub struct $coll_name {
                 $(
                     $(#[$additional_field_attr])*
-                    pub [<$field:snake:lower>]: $field_type
+                    pub $field: $field_type
                 ),*
             }
 

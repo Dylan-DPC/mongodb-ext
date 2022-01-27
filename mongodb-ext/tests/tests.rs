@@ -39,6 +39,11 @@ mongo_db! {
         Collection5 {
             #[builder(default = <Collection5 as MongoCollection>::SCHEMA_VERSION)]
             schema_version: i32,
+        };
+        #[derive(Debug)]
+        Collection6 {
+            #[builder(default = true)]
+            r#type: bool
         }
     }-{
         pub fn mongo_code() -> bool { true }
@@ -261,4 +266,9 @@ pub fn test_schema_version_default() {
             schema_version: <Collection5 as MongoCollection>::SCHEMA_VERSION
         }
     );
+}
+
+#[test]
+pub fn test_reserved_keyword_collection_fields() {
+    assert!(mongo::schema::Collection6::builder().build().r#type);
 }
