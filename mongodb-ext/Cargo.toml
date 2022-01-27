@@ -12,6 +12,7 @@ documentation = "https://docs.rs/mongodb-ext/"
 
 [dependencies]
 serde = "1"
+typed-builder = "0"
 async-trait = "0"
 paste = "1"
 mongodb-ext-derive = "1"

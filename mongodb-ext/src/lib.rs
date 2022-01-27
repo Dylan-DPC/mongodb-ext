@@ -2,7 +2,7 @@
 
 /// To make [`mongo_db`] work reliably a couple of re-exports are needed, these are not relevant for using the macro.
 #[doc(hidden)]
-pub use {async_trait, mongodb, mongodb_ext_derive, paste, serde};
+pub use {async_trait, mongodb, mongodb_ext_derive, paste, serde, typed_builder};
 
 #[doc(hidden)]
 pub mod traits;
@@ -18,7 +18,7 @@ pub use crate::traits::{MongoClient, MongoCollection};
 ///
 pub use mongodb::bson::oid::ObjectId as DefaultId;
 
-/// Defines the default value used as schema version in [`MongoCollection::SCHEMA_VERSION`] when not specified otherwise.
+/// Defines the default value used as schema version in [`MongoCollection::SCHEMA_VERSION`] if not specified otherwise.
 pub const DEFAULT_SCHEMA_VERSION: i32 = 1;
 
 /// This macro parses the per-collection parameters in a more usable format.
@@ -112,6 +112,7 @@ macro_rules! expand_collection_id {
         $($rest:tt)*
     ) => {
         $crate::expand_collection!{
+            @add_id
             version = $version;
             id = $crate::DefaultId;
             $($rest)*
@@ -123,6 +124,7 @@ macro_rules! expand_collection_id {
         $($rest:tt)*
     ) => {
         $crate::expand_collection!{
+            @final
             version = $version;
             id = none;
             $($rest)*
@@ -134,6 +136,7 @@ macro_rules! expand_collection_id {
         $($rest:tt)*
     ) => {
         $crate::expand_collection!{
+            @add_id
             version = $version;
             id = $id;
             $($rest)*
@@ -150,6 +153,7 @@ macro_rules! expand_collection_id {
 macro_rules! expand_collection {
     // invoked with `_id: none`, thus assume `_id` is added already and finally expand to collection
     (
+        @final
         version = $schema_version:expr;
         id = none;
         $(#[$additional_coll_attr:meta])*
@@ -165,7 +169,7 @@ macro_rules! expand_collection {
     ) => {
         $crate::paste::paste! {
             #[doc = "Represents the [`" $coll_name "`] collection in mongodb."]
-            #[derive($crate::serde::Deserialize, $crate::serde::Serialize)]
+            #[derive($crate::serde::Deserialize, $crate::serde::Serialize, $crate::typed_builder::TypedBuilder)]
             #[serde(rename_all = "camelCase")]
             $(#[$additional_coll_attr])*
             pub struct $coll_name {
@@ -189,6 +193,7 @@ macro_rules! expand_collection {
     };
     // specific type for `_id` given, add it and invoke again with `_id: none` to avoid adding the `_id` field again
     (
+        @add_id
         version = $schema_version:expr;
         id = $explicit_id_type:ty;
         $(#[$additional_coll_attr:meta])*
@@ -203,12 +208,14 @@ macro_rules! expand_collection {
         })?
     ) => {
         $crate::expand_collection! {
+            @final
             version = $schema_version;
             id = none;
             $(#[$additional_coll_attr])*
             $coll_name {
                 #[serde(skip_serializing_if = "std::option::Option::is_none")]
                 #[serde(rename = "_id")]
+                #[builder(default)]
                 _id: std::option::Option<$explicit_id_type>,
                 $(
                     $(#[$additional_field_attr])*
@@ -710,6 +717,84 @@ macro_rules! expand_main_client {
 ///     },
 /// );
 /// ```
+///
+/// ## [`TypedBuilder`](typed_builder::TypedBuilder)
+///
+/// Each schema implements [`TypedBuilder`](typed_builder::TypedBuilder) which lets you create a collection more easily.
+///
+/// If `_id` is not set to `none`, the `_id` field will have a `builder` attribute set to `default`.
+/// This enables you to skip specifying `_id` as [`None`].
+///
+/// ```rust
+/// use mongodb_ext::{mongo_db, MongoClient, MongoCollection};
+///
+/// mongo_db! {
+///     MyDatabase {
+///         #[derive(Debug, PartialEq)]
+///         MyCollection<version: 2, _id: u128> {
+///             name: String,
+///             counter: u32,
+///             schema_version: i32
+///         }
+///     }
+/// }
+///
+/// use mongo::schema::MyCollection;
+///
+/// assert_eq!(
+///     // constructing using the builder
+///     // note that no field `_id` is specified, thus `None` is used
+///     MyCollection::builder()
+///         .name("Alice".to_string())
+///         .counter(1)
+///         .schema_version(MyCollection::SCHEMA_VERSION)
+///         .build(),
+///     // constructing normally
+///     MyCollection {
+///         _id: None,
+///         name: "Alice".to_string(),
+///         counter: 1,
+///         schema_version: MyCollection::SCHEMA_VERSION
+///     }
+/// );
+/// ```
+///
+/// Combining the schema version with the typed builder can be very useful:
+///
+/// ```rust
+/// use mongodb_ext::{mongo_db, MongoClient, MongoCollection};
+///
+/// mongo_db! {
+///     MyDatabase {
+///         {
+///             use mongodb_ext::MongoCollection;
+///         }
+///         #[derive(Debug, PartialEq)]
+///         MyCollection<version: 2, _id: u128> {
+///             name: String,
+///             counter: u32,
+///             #[builder(default = <MyCollection as MongoCollection>::SCHEMA_VERSION)]
+///             schema_version: i32
+///         }
+///     }
+/// }
+///
+/// use mongo::schema::MyCollection;
+///
+/// assert_eq!(
+///     // specifying no version takes version constant by default
+///     MyCollection::builder()
+///         .name("Alice".to_string())
+///         .counter(255)
+///         .build(),
+///     MyCollection {
+///         _id: None,
+///         name: "Alice".to_string(),
+///         counter: 255,
+///         schema_version: 2
+///     }
+/// );
+/// ```
 #[macro_export]
 macro_rules! mongo_db {
     // only one match, the real magic happens in `expand_collection` and `expand_main_client`
@@ -788,221 +873,4 @@ macro_rules! mongo_db {
             }
         }
     };
-}
-
-mongo_db! {
-    Db {
-        Coll {}
-    }
-}
-#[cfg(test)]
-mod test {
-    use super::mongo_db;
-
-    #[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
-    pub struct MyLocalType;
-
-    mongo_db! {
-        #[derive(Debug, Clone)]
-        DatabaseOfDoom {
-            {
-                use std::collections::HashMap;
-                use super::super::MyLocalType;
-            }
-
-            #[derive(Debug, Clone)]
-            TypeCheckCollection<version: 2, _id: none> {
-                map: HashMap<String, u32>,
-                local: MyLocalType
-            }-{
-                pub fn collection_code() -> bool { true }
-            };
-            #[derive(Debug, Clone, PartialEq)]
-            Items<version: 3> {
-                counter: u16,
-                name: String
-            };
-            #[derive(Debug)]
-            QueuedItems {
-                something: Option<bool>,
-            };
-            #[derive(Debug)]
-            AnotherOne<_id: none, version: 29> {
-                #[serde(rename = "thisFieldsNewName")]
-                renamed_field: String,
-                #[serde(skip_serializing)]
-                ignored_field: u64
-            };
-        }-{
-            pub fn mongo_code() -> bool { true }
-        }
-    }
-
-    #[test]
-    pub fn check_schema_versions() {
-        use crate::MongoCollection;
-
-        assert_eq!(mongo::schema::TypeCheckCollection::SCHEMA_VERSION, 2);
-        assert_eq!(mongo::schema::Items::SCHEMA_VERSION, 3);
-        assert_eq!(mongo::schema::QueuedItems::SCHEMA_VERSION, 1);
-        assert_eq!(mongo::schema::AnotherOne::SCHEMA_VERSION, 29);
-    }
-
-    #[test]
-    pub fn check_additional_code() {
-        assert!(mongo::DatabaseOfDoom::mongo_code());
-        assert!(mongo::schema::TypeCheckCollection::collection_code());
-    }
-
-    #[test]
-    pub fn check_field_attributes() {
-        use serde_json::ser;
-
-        let another_one = mongo::schema::AnotherOne {
-            renamed_field: String::from("something"),
-            ignored_field: 1,
-        };
-
-        assert_eq!(
-            ser::to_string(&another_one).expect("Could not serialize AnotherOne"),
-            String::from("{\"thisFieldsNewName\":\"something\"}")
-        );
-    }
-
-    #[test]
-    pub fn check_json_serialization() {
-        use serde_json::{from_value, json, Value};
-
-        let my_item: Value = json! ({
-            "counter": 0,
-            "name": "my_special_item"
-        });
-
-        let my_collection_entry: mongo::schema::Items =
-            from_value(my_item).expect("Could not convert json Value to collection document");
-
-        assert_eq!(
-            my_collection_entry,
-            mongo::schema::Items {
-                _id: None,
-                counter: 0,
-                name: String::from("my_special_item")
-            }
-        );
-    }
-
-    #[test]
-    pub fn check_doc_serialization() {
-        use mongodb::bson::{de::from_document, doc, Document};
-
-        let my_item: Document = doc! {
-            "counter": 0,
-            "name": "my_special_item"
-        };
-
-        let my_collection_entry: mongo::schema::Items = from_document(my_item)
-            .expect("Could not convert mongodb bson Document to collection document");
-
-        assert_eq!(
-            my_collection_entry,
-            mongo::schema::Items {
-                _id: None,
-                counter: 0,
-                name: String::from("my_special_item")
-            }
-        );
-    }
-
-    #[test]
-    pub fn check_json_serialization_with_id() {
-        use {
-            mongodb::bson::oid::ObjectId,
-            serde_json::{from_value, json, Value},
-        };
-
-        let my_item: Value = json! ({
-            "_id": "0123456789ABCDEF01234567",
-            "counter": 0,
-            "name": "my_special_item"
-        });
-
-        let my_collection_entry: mongo::schema::Items =
-            from_value(my_item).expect("Could not convert json Value to collection document");
-
-        assert_eq!(
-            my_collection_entry,
-            mongo::schema::Items {
-                _id: Some(ObjectId::parse_str("0123456789ABCDEF01234567").unwrap()),
-                counter: 0,
-                name: String::from("my_special_item")
-            }
-        );
-    }
-
-    #[test]
-    pub fn check_doc_serialization_with_id() {
-        use mongodb::bson::{de::from_document, doc, oid::ObjectId, Document};
-
-        let my_item: Document = doc! {
-            "_id": "0123456789ABCDEF01234567",
-            "counter": 0,
-            "name": "my_special_item"
-        };
-
-        let my_collection_entry: mongo::schema::Items = from_document(my_item)
-            .expect("Could not convert mongodb bson Document to collection document");
-
-        assert_eq!(
-            my_collection_entry,
-            mongo::schema::Items {
-                _id: Some(ObjectId::parse_str("0123456789ABCDEF01234567").unwrap()),
-                counter: 0,
-                name: String::from("my_special_item")
-            }
-        );
-    }
-
-    #[test]
-    pub fn check_constants() {
-        use super::traits::*;
-        assert_eq!("databaseOfDoom", mongo::DatabaseOfDoom::NAME);
-        assert_eq!("items", mongo::schema::Items::NAME);
-        assert_eq!("queuedItems", mongo::schema::QueuedItems::NAME);
-    }
-
-    /// This test is rather useless, but it's currently the best way to test the [`DatabaseOfDoom::new`] function.
-    #[test]
-    pub fn check_initializer() {
-        use super::traits::MongoClient;
-        // try to initialize with an invalid connection string
-        if let Err(e) =
-            tokio_test::block_on(mongo::DatabaseOfDoom::new("invalid connection string"))
-        {
-            // make sure the correct error message is produced
-            assert_eq!(
-                format!("{}", e),
-                String::from(
-                    "An invalid argument was provided: connection string contains no scheme"
-                )
-            );
-        } else {
-            // this should really not happen
-            panic!("Somehow constructed a database client without a proper connection string")
-        }
-
-        // initialize with valid connection string
-        match tokio_test::block_on(mongo::DatabaseOfDoom::new("mongodb://localhost:27017")) {
-            Ok(client) => {
-                // check the collections' names
-                assert_eq!(client.items_coll.name(), "items");
-                assert_eq!(client.queued_items_coll.name(), "queuedItems");
-            }
-            Err(e) => {
-                panic!(
-                    "Could not construct mongodb client with proper connection string: {}",
-                    e
-                )
-            }
-        }
-    }
 }
