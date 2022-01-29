@@ -1,4 +1,18 @@
 //! This crate provides the macro [`mongo_db`] to model a mongoDB database.
+//!
+//! # Features
+//!
+//! Feature flags are documented here.
+//!
+//! ## `default`
+//!
+//! This feature enables the following feature(s):
+//!
+//! - `mongodb-gridfs`
+//!
+//! ## `mongodb-gridfs`
+//!
+//! Enabling this feature creates automatic implementations of the then-available trait `GridFSDb`.
 
 /// To make [`mongo_db`] work reliably a couple of re-exports are needed, these are not relevant for using the macro.
 #[doc(hidden)]
