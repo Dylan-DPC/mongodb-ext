@@ -10,6 +10,9 @@ pub mod traits;
 #[doc(hidden)]
 pub use crate::mongodb_ext_derive::case;
 
+#[cfg(feature = "mongodb-gridfs")]
+pub use crate::traits::GridFSDb;
+
 pub use crate::traits::{MongoClient, MongoCollection};
 
 /// Defines the default type inside an [`Option`] for the `_id` field.
@@ -295,6 +298,13 @@ macro_rules! expand_main_client {
 
                 async fn ping(&self) -> $crate::mongodb::error::Result<$crate::mongodb::bson::document::Document> {
                     self.database.run_command($crate::mongodb::bson::doc!{"ping": 1}, std::option::Option::None).await
+                }
+
+                fn database(&self) -> &$crate::mongodb::Database {
+                    &self.database
+                }
+                fn client(&self) -> &$crate::mongodb::Client {
+                    &self.client
                 }
             }
             $(

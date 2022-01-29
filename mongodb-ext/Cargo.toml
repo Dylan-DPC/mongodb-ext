@@ -17,6 +17,7 @@ async-trait = "0"
 paste = "1"
 mongodb-ext-derive = "1"
 mongodb = "2"
+mongodb-gridfs = { version = "0", optional = true}
 
 [dev-dependencies]
 serde = "1"

@@ -2,7 +2,9 @@
 
 use crate::{
     async_trait::async_trait,
-    mongodb::{bson::document::Document, error::Result as MongoResult},
+    mongodb::{
+        bson::document::Document, error::Result as MongoResult, Client as DbClient, Database,
+    },
 };
 
 /// Trait that is implemented automatically on each collection struct by [`mongo_db`].
@@ -29,4 +31,52 @@ where
     async fn new(connection_str: &str) -> MongoResult<Self>;
     /// Method that sends a ping command to the database.
     async fn ping(&self) -> MongoResult<Document>;
+
+    /// Returns a reference to the database object.
+    fn database(&self) -> &Database;
+    /// Returns a reference to the mongodb client object.
+    fn client(&self) -> &DbClient;
+}
+
+#[cfg(feature = "mongodb-gridfs")]
+pub use gridfs::GridFSDb;
+
+/// Optional module that is enabled using the _"mongodb-gridfs"_ feature.
+///
+/// Provides automatic implementation of the [`GridFSDb`](gridfs::GridFSDb) trait on all types that implement [`MongoClient`].
+#[cfg(feature = "mongodb-gridfs")]
+pub mod gridfs {
+    use {super::MongoClient, mongodb_gridfs::GridFSBucket};
+
+    /// Trait that is implemented automatically on all Database handlers.
+    ///
+    /// Feature flag _"mongodb-gridfs"_ is needed to use this trait.
+    ///
+    /// ```rust
+    /// use mongodb_ext::{mongo_db, GridFSDb, MongoClient};
+    /// use mongodb_gridfs::GridFSBucket;
+    /// use tokio_test::block_on;
+    ///
+    /// mongo_db! {
+    ///     SomeDatabase {
+    ///         SomeCollection {
+    ///             some_field: String
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// use mongo::SomeDatabase;
+    ///
+    /// // using `tokio::block_on` to run async code in tests
+    /// let db: SomeDatabase = block_on(SomeDatabase::new("mongodb://example.com")).unwrap();
+    /// let bucket: GridFSBucket = db.create_bucket();
+    /// ```
+    pub trait GridFSDb: MongoClient {
+        /// Creates a mongodb GridFS bucket.
+        fn create_bucket(&self) -> GridFSBucket {
+            GridFSBucket::new(self.database().clone(), None)
+        }
+    }
+
+    impl<T> GridFSDb for T where T: MongoClient {}
 }
