@@ -295,10 +295,10 @@ macro_rules! expand_main_client {
                         $crate::mongodb::error::Result::Ok(client) => client,
                         $crate::mongodb::error::Result::Err(e) => return $crate::mongodb::error::Result::Err(e),
                     };
-                    <Self as $crate::MongoClient>::new_with_client(client).await
+                    <Self as $crate::MongoClient>::new_with_client(client)
                 }
 
-                async fn new_with_client(client: $crate::mongodb::Client) -> $crate::mongodb::error::Result<Self> {
+                fn new_with_client(client: $crate::mongodb::Client) -> $crate::mongodb::error::Result<Self> {
                     let database = client.database(<Self as $crate::MongoClient>::NAME);
                     $(
                         let [<$coll_name:snake:lower _coll>] = database.collection(<schema::$coll_name as $crate::MongoCollection>::NAME);

@@ -34,7 +34,7 @@ where
     /// Initializer function that uses the given client.
     ///
     /// Useful when interacting with multiple databases.
-    async fn new_with_client(client: DbClient) -> MongoResult<Self>;
+    fn new_with_client(client: DbClient) -> MongoResult<Self>;
     /// Method that sends a ping command to the database.
     async fn ping(&self) -> MongoResult<Document>;
 

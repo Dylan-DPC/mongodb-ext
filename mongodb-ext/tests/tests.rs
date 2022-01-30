@@ -201,8 +201,7 @@ pub fn check_initializer() {
     // initialize with valid connection string
     let db_handler1 = tokio_test::block_on(mongo::Database::new("mongodb://example.com")).unwrap();
     // initialize with Client
-    let _db_handler2 =
-        tokio_test::block_on(mongo::Database::new_with_client(db_handler1.client)).unwrap();
+    let _db_handler2 = mongo::Database::new_with_client(db_handler1.client).unwrap();
 
     assert_eq!(db_handler1.collection1_coll.name(), "collection1");
     assert_eq!(db_handler1.collection2_coll.name(), "collection2");
