@@ -183,7 +183,7 @@ pub fn check_constant_names() {
     assert_eq!("collection4", mongo::schema::Collection4::NAME);
 }
 
-/// This test is rather useless, but it's currently the best way to test the [`DatabaseOfDoom::new`] function.
+/// This test is rather useless, but it's currently the best way to test the `new` / `new_with_client` function.
 #[test]
 pub fn check_initializer() {
     // try to initialize with an invalid connection string
@@ -199,21 +199,15 @@ pub fn check_initializer() {
     }
 
     // initialize with valid connection string
-    match tokio_test::block_on(mongo::Database::new("mongodb://localhost:27017")) {
-        Ok(client) => {
-            // check the collections' names
-            assert_eq!(client.collection1_coll.name(), "collection1");
-            assert_eq!(client.collection2_coll.name(), "collection2");
-            assert_eq!(client.collection3_coll.name(), "collection3");
-            assert_eq!(client.collection4_coll.name(), "collection4");
-        }
-        Err(e) => {
-            panic!(
-                "Could not construct mongodb client with proper connection string: {}",
-                e
-            )
-        }
-    }
+    let db_handler1 = tokio_test::block_on(mongo::Database::new("mongodb://example.com")).unwrap();
+    // initialize with Client
+    let _db_handler2 =
+        tokio_test::block_on(mongo::Database::new_with_client(db_handler1.client)).unwrap();
+
+    assert_eq!(db_handler1.collection1_coll.name(), "collection1");
+    assert_eq!(db_handler1.collection2_coll.name(), "collection2");
+    assert_eq!(db_handler1.collection3_coll.name(), "collection3");
+    assert_eq!(db_handler1.collection4_coll.name(), "collection4");
 }
 
 #[test]

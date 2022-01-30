@@ -28,7 +28,13 @@ where
     /// The database's name.
     const NAME: &'static str;
     /// Initializer funtion of the database.
+    ///
+    /// Creates a database [`DbClient`] and calls [`new_with_client`](MongoClient::new_with_client) then.
     async fn new(connection_str: &str) -> MongoResult<Self>;
+    /// Initializer function that uses the given client.
+    ///
+    /// Useful when interacting with multiple databases.
+    async fn new_with_client(client: DbClient) -> MongoResult<Self>;
     /// Method that sends a ping command to the database.
     async fn ping(&self) -> MongoResult<Document>;
 

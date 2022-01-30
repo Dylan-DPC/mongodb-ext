@@ -295,19 +295,19 @@ macro_rules! expand_main_client {
                         $crate::mongodb::error::Result::Ok(client) => client,
                         $crate::mongodb::error::Result::Err(e) => return $crate::mongodb::error::Result::Err(e),
                     };
-                    let database = client.database(Self::NAME);
-                    // create a scope here to hygienically `use` the trait.
-                    {
-                        use $crate::MongoCollection;
-                        $(
-                            let [<$coll_name:snake:lower _coll>] = database.collection(schema::$coll_name::NAME);
-                        )+
-                        $crate::mongodb::error::Result::Ok(Self {
-                            client,
-                            database,
-                            $([<$coll_name:snake:lower _coll>]),+
-                        })
-                    }
+                    <Self as $crate::MongoClient>::new_with_client(client).await
+                }
+
+                async fn new_with_client(client: $crate::mongodb::Client) -> $crate::mongodb::error::Result<Self> {
+                    let database = client.database(<Self as $crate::MongoClient>::NAME);
+                    $(
+                        let [<$coll_name:snake:lower _coll>] = database.collection(<schema::$coll_name as $crate::MongoCollection>::NAME);
+                    )+
+                    $crate::mongodb::error::Result::Ok(Self {
+                        client,
+                        database,
+                        $([<$coll_name:snake:lower _coll>]),+
+                    })
                 }
 
                 async fn ping(&self) -> $crate::mongodb::error::Result<$crate::mongodb::bson::document::Document> {
